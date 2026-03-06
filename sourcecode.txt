@@ -1,0 +1,318 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import datetime
+import csv
+import os
+import win32print
+import time
+
+# ---------------- THEME / CONFIG ----------------
+PRIMARY_BLUE = "#2563EB"
+HOVER_BLUE = "#1D4ED8"
+BG_COLOR = "#E2E8F0"  # Slightly darker background
+TEXT_DARK = "#1E293B"
+DANGER_RED = "#DC2626"
+SECONDARY_BTN = "#CBD5E1"
+
+PRINTER_NAME = "ZDesigner ZD421-203dpi ZPL"
+LOG_FILE = "hall_pass_log.csv"
+NAMES_FILE = "names_list.txt"
+RESET_HOURS = 12
+MAX_STUDENTS_OUT = 3
+
+logs = []
+names_list = []
+
+# ---------------- FILE LOAD/SAVE ----------------
+def load_names():
+    if os.path.exists(NAMES_FILE):
+        with open(NAMES_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                name = line.strip()
+                if name and name not in names_list:
+                    names_list.append(name)
+
+def save_name(name):
+    name = name.capitalize()
+    if name not in names_list:
+        names_list.append(name)
+        with open(NAMES_FILE, "a", encoding="utf-8") as f:
+            f.write(name + "\n")
+
+def load_logs():
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                logs.append(row)
+
+def save_log(entry):
+    file_exists = os.path.exists(LOG_FILE)
+    with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["Name", "Room", "Date", "Time", "Reason"])
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(entry)
+
+def save_all_logs():
+    with open(LOG_FILE, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["Name", "Room", "Date", "Time", "Reason"])
+        writer.writeheader()
+        for entry in logs:
+            writer.writerow(entry)
+
+# ---------------- PRINTER ----------------
+def send_zpl(zpl):
+    try:
+        hprinter = win32print.OpenPrinter(PRINTER_NAME)
+        win32print.StartDocPrinter(hprinter, 1, ("Hall Pass", None, "RAW"))
+        win32print.StartPagePrinter(hprinter)
+        win32print.WritePrinter(hprinter, zpl.encode("ascii", errors="replace"))
+        win32print.EndPagePrinter(hprinter)
+        win32print.EndDocPrinter(hprinter)
+        win32print.ClosePrinter(hprinter)
+    except Exception as e:
+        messagebox.showerror("Printer Error", str(e))
+
+def print_to_printer(name, room, reason, date, time_):
+    zpl = f"""^XA
+^PW406
+^LL203
+^LH0,0
+^CF0,26
+^FO0,8^FB406,1,0,C,0^FDHALL PASS^FS
+^CF0,18
+^FO10,38^FDName:^FS
+^FO90,38^FD{name}^FS
+^FO10,62^FDRoom:^FS
+^FO90,62^FD{room}^FS
+^FO210,62^FDTime:^FS
+^FO270,62^FD{time_}^FS
+^FO10,86^FDDate:^FS
+^FO90,86^FD{date}^FS
+^FO10,110^FDReason:^FS
+^FO90,110^FB306,2,0,L,0^FD{reason}^FS
+^CF0,16
+^FO10,170^FDTeacher Signature:^FS
+^FO150,177^GB246,2,2^FS
+^XZ"""
+    send_zpl(zpl)
+
+# ---------------- SPLASH SCREEN ----------------
+def show_splash():
+    splash = tk.Tk()
+    splash.title("Loading Hall Pass Printer")
+    splash.geometry("600x300")
+    splash.configure(bg=BG_COLOR)
+    splash.overrideredirect(True)
+
+    tk.Label(splash, text="Hall Pass Printer", font=("Segoe UI", 28, "bold"),
+             fg=PRIMARY_BLUE, bg=BG_COLOR).pack(pady=40)
+
+    progress = ttk.Progressbar(splash, orient="horizontal", length=400, mode="determinate")
+    progress.pack(pady=20)
+
+    # Animate loading bar for 1 second
+    steps = 100
+    delay = 10
+    for i in range(steps + 1):
+        splash.update_idletasks()
+        progress['value'] = i
+        splash.after(delay)
+        splash.update()
+    splash.destroy()
+
+# ---------------- GUI FUNCTIONS ----------------
+def update_active():
+    now = datetime.datetime.now()
+    count = 0
+    for entry in logs:
+        dt = datetime.datetime.strptime(
+            f"{entry['Date']} {entry['Time']}",
+            "%m/%d/%Y %I:%M %p"
+        )
+        if (now - dt).total_seconds() <= 600:
+            count += 1
+
+    active_label.config(text=f"Students currently out: {count}")
+
+    if count >= MAX_STUDENTS_OUT:
+        active_label.config(fg="white", bg=DANGER_RED)
+    else:
+        active_label.config(fg=DANGER_RED, bg=BG_COLOR)
+
+    window.after(30000, update_active)
+
+def autocomplete(event):
+    typed = name_var.get()
+    if len(typed) < 3:
+        return
+    matches = [n for n in names_list if n.lower().startswith(typed.lower())]
+    if matches:
+        name_var.set(matches[0])
+        name_entry.icursor(len(typed))
+        name_entry.select_range(len(typed), tk.END)
+
+def issue_pass(event=None):
+    name = name_var.get().strip().capitalize()
+    room = room_var.get().strip()
+    reason = reason_var.get().strip()
+
+    if not name or not room or not reason:
+        messagebox.showwarning("Oops!", "You didn't finish filling it out silly!")
+        return
+
+    now = datetime.datetime.now()
+    date = now.strftime("%m/%d/%Y")
+    time_ = now.strftime("%I:%M %p")
+
+    entry = {"Name": name, "Room": room, "Date": date, "Time": time_, "Reason": reason}
+    logs.append(entry)
+    save_log(entry)
+    save_name(name)
+    print_to_printer(name, room, reason, date, time_)
+
+    reason_var.set("")
+    update_active()
+
+def view_log():
+    if not logs:
+        messagebox.showinfo("Empty", "Nothing to be seen here yet!")
+        return
+
+    win = tk.Toplevel(window)
+    win.title("Log")
+    win.geometry("1000x500")
+
+    cols = ("Name", "Room", "Date", "Time", "Reason", "Delete")
+    tree = ttk.Treeview(win, columns=cols, show="headings")
+
+    for col in cols[:-1]:
+        tree.heading(col, text=col)
+        tree.column(col, width=150 if col != "Reason" else 300)
+
+    tree.heading("Delete", text="Delete")
+    tree.column("Delete", width=50)
+
+    tree.pack(fill="both", expand=True)
+
+    def refresh():
+        for row in tree.get_children():
+            tree.delete(row)
+        for i, entry in enumerate(logs):
+            tree.insert("", "end", iid=i, values=(
+                entry["Name"],
+                entry["Room"],
+                entry["Date"],
+                entry["Time"],
+                entry["Reason"],
+                "X"
+            ))
+
+    refresh()
+
+    def click(event):
+        item = tree.identify_row(event.y)
+        col = tree.identify_column(event.x)
+        if col == "#6" and item:
+            index = int(item)
+            del logs[index]
+            save_all_logs()
+            refresh()
+            update_active()
+
+    tree.bind("<Button-1>", click)
+
+    # Delete all logs button
+    tk.Button(win, text="Delete Entire Log", bg=DANGER_RED, fg="white", font=("Segoe UI", 14),
+              command=lambda: [logs.clear(), save_all_logs(), win.destroy()]).pack(pady=10)
+
+# ---------------- MAIN WINDOW ----------------
+def start_main_window():
+    global window, name_var, name_entry, room_var, room_combo, reason_var, reason_combo, active_label
+
+    window = tk.Tk()
+    window.title("Hall Pass Printer")
+    window.geometry("1100x900")
+    window.configure(bg=BG_COLOR)
+
+    window.attributes("-alpha", 0.0)
+    def fade_in(alpha=0):
+        alpha += 0.05
+        if alpha <= 1:
+            window.attributes("-alpha", alpha)
+            window.after(20, fade_in, alpha)
+    fade_in()
+
+    FONT_MAIN = ("Segoe UI", 18)
+    FONT_LABEL = ("Segoe UI", 22)
+    FONT_TITLE = ("Segoe UI", 36, "bold")
+
+    # Title
+    tk.Label(window, text="Hall Pass Printer", font=FONT_TITLE, bg=BG_COLOR, fg=PRIMARY_BLUE).pack(pady=30)
+
+    frame = tk.Frame(window, bg=BG_COLOR)
+    frame.pack()
+
+    # Name
+    tk.Label(frame, text="Student Name:", font=FONT_LABEL, bg=BG_COLOR, fg=TEXT_DARK).pack()
+    name_var = tk.StringVar()
+    name_entry = tk.Entry(frame, textvariable=name_var, font=FONT_MAIN, width=30, bd=0,
+                          highlightthickness=2, highlightbackground="#CBD5E1", highlightcolor=PRIMARY_BLUE)
+    name_entry.pack(pady=12)
+    name_entry.bind("<KeyRelease>", autocomplete)
+
+    # Room
+    tk.Label(frame, text="Room Number:", font=FONT_LABEL, bg=BG_COLOR, fg=TEXT_DARK).pack()
+    room_var = tk.StringVar()
+    room_combo = ttk.Combobox(frame, textvariable=room_var, values=["1311A", "1311B"], font=FONT_MAIN, width=28)
+    room_combo.pack(pady=12)
+    room_combo.set("1311B")
+
+    # Reason
+    tk.Label(frame, text="Reason:", font=FONT_LABEL, bg=BG_COLOR, fg=TEXT_DARK).pack()
+    reason_var = tk.StringVar()
+    reason_combo = ttk.Combobox(frame, textvariable=reason_var, values=["Bathroom", "Water", "Other"], font=FONT_MAIN, width=28)
+    reason_combo.pack(pady=12)
+
+    # Caption
+    tk.Label(frame, text="Make sure to get a teacher's signature!", font=("Segoe UI",16,"italic"),
+             bg=BG_COLOR, fg=DANGER_RED).pack(pady=20)
+
+    # Buttons
+    def on_enter_primary(e): e.widget["bg"] = HOVER_BLUE
+    def on_leave_primary(e): e.widget["bg"] = PRIMARY_BLUE
+    def on_enter_secondary(e): e.widget["bg"] = "#CBD5E1"
+    def on_leave_secondary(e): e.widget["bg"] = SECONDARY_BTN
+
+    print_button = tk.Button(frame, text="Print Pass", command=issue_pass,
+                             font=("Segoe UI", 20, "bold"), bg=PRIMARY_BLUE, fg="white",
+                             activebackground=HOVER_BLUE, activeforeground="white", bd=0, padx=40, pady=15)
+    print_button.pack(pady=15)
+    print_button.bind("<Enter>", on_enter_primary)
+    print_button.bind("<Leave>", on_leave_primary)
+
+    log_button = tk.Button(frame, text="View Log", command=view_log,
+                           font=("Segoe UI",16), bg=SECONDARY_BTN, fg=TEXT_DARK, bd=0, padx=25, pady=10)
+    log_button.pack()
+    log_button.bind("<Enter>", on_enter_secondary)
+    log_button.bind("<Leave>", on_leave_secondary)
+
+    # Active count
+    active_label = tk.Label(frame, text="Students currently out: 0", font=("Segoe UI",20,"bold"),
+                            bg=BG_COLOR, fg=DANGER_RED)
+    active_label.pack(pady=30)
+
+    # Credits
+    tk.Label(window, text="Created by Syed Hasan, Franco Mendoza, Mustafa Paktiawal, and Kai Ademi",
+             font=("Segoe UI",16), bg=BG_COLOR, fg="#64748B").place(relx=1.0, rely=1.0, anchor="se", x=-20, y=-15)
+
+    window.bind("<Return>", issue_pass)
+    update_active()
+    window.mainloop()
+
+# ---------------- RUN ----------------
+show_splash()
+load_names()
+load_logs()
+start_main_window()
